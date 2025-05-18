@@ -1,0 +1,148 @@
+import numpy as np
+import plotly.graph_objects as go
+from itertools import combinations
+
+###############################
+# 1. Drone State Representation
+###############################
+
+class Drone:
+    def __init__(self, drone_id, initial_pos, velocity, start_time=0, end_time=10):
+        """
+        drone_id: str, unique identifier
+        initial_pos: (x0, y0, z0) tuple
+        velocity: (vx, vy, vz) tuple - constant velocity vector
+        start_time: float, prediction start time
+        end_time: float, prediction end time
+        """
+        self.id = drone_id
+        self.initial_pos = np.array(initial_pos, dtype=float)
+        self.velocity = np.array(velocity, dtype=float)
+        self.start_time = start_time
+        self.end_time = end_time
+
+    def position_at(self, t):
+        """
+        Predict drone position at time t using linear motion.
+        """
+        dt = t - self.start_time
+        return self.initial_pos + self.velocity * dt
+
+###############################
+# 2 & 3. Predict Positions Over Time Horizon
+###############################
+
+def generate_time_steps(start, end, step=0.1):
+    return np.arange(start, end + step, step)
+
+###############################
+# 4. Conflict Detection Logic
+###############################
+
+def detect_conflicts(drones, buffer_distance=2.0, time_step=0.1):
+    """
+    Predicts conflicts over the time horizon.
+    
+    Parameters:
+        drones: list of Drone objects
+        buffer_distance: minimum safe distance
+        time_step: interval in seconds to sample positions
+
+    Returns:
+        conflicts: list of dicts with conflict info
+    """
+    # Find overall time range
+    global_start = min(d.start_time for d in drones)
+    global_end = max(d.end_time for d in drones)
+    times = generate_time_steps(global_start, global_end, time_step)
+
+    conflicts = []
+    
+    # Check every pair of drones
+    for t in times:
+        # Compute positions of all drones at time t
+        positions = {d.id: d.position_at(t) for d in drones}
+        
+        # Check each unique pair
+        for d1, d2 in combinations(drones, 2):
+            pos1 = positions[d1.id]
+            pos2 = positions[d2.id]
+            dist = np.linalg.norm(pos1 - pos2)
+            
+            if dist < buffer_distance:
+                conflicts.append({
+                    "time": t,
+                    "drones": (d1.id, d2.id),
+                    "positions": (pos1.tolist(), pos2.tolist()),
+                    "distance": dist
+                })
+                # Optionally stop checking after first conflict or continue to find all
+    return conflicts
+
+###############################
+# 7. Visualization
+###############################
+
+def visualize_trajectories(drones, conflicts=None):
+    fig = go.Figure()
+    
+    # Plot drone trajectories
+    for d in drones:
+        times = generate_time_steps(d.start_time, d.end_time, 0.1)
+        traj = np.array([d.position_at(t) for t in times])
+        fig.add_trace(go.Scatter3d(
+            x=traj[:,0], y=traj[:,1], z=traj[:,2],
+            mode='lines',
+            name=f"Drone {d.id}"
+        ))
+    
+    # Plot conflicts if any
+    if conflicts:
+        for conflict in conflicts:
+            # Mark conflict location as midpoint between drones at conflict time
+            pos1, pos2 = conflict["positions"]
+            midpoint = [(p1 + p2) / 2 for p1, p2 in zip(pos1, pos2)]
+            fig.add_trace(go.Scatter3d(
+                x=[midpoint[0]],
+                y=[midpoint[1]],
+                z=[midpoint[2]],
+                mode='markers',
+                marker=dict(size=8, color='red', symbol='x'),
+                name=f"Conflict at t={conflict['time']:.2f}s"
+            ))
+
+    fig.update_layout(
+        title="3D Drone Trajectories with Predicted Conflicts",
+        scene=dict(
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z'
+        ),
+        legend=dict(x=0, y=1)
+    )
+    fig.show()
+
+###############################
+# Example Usage
+###############################
+
+if __name__ == "__main__":
+    # Define drones with position, velocity, and time window
+    drones = [
+        Drone("A", initial_pos=(0, 0, 0), velocity=(1, 1, 0.2), start_time=0, end_time=10),
+        Drone("B", initial_pos=(10, 10, 0), velocity=(-1, -1, 0), start_time=0, end_time=10),
+        Drone("C", initial_pos=(5, 0, 1), velocity=(0, 1, 0), start_time=0, end_time=10)
+    ]
+
+    # Detect conflicts
+    conflicts = detect_conflicts(drones, buffer_distance=2.5, time_step=0.1)
+
+    if conflicts:
+        print(f"Conflicts detected ({len(conflicts)} instances):")
+        for c in conflicts:
+            print(f"At t={c['time']:.2f}s, drones {c['drones']} within {c['distance']:.2f} units")
+    else:
+        print("No conflicts detected.")
+
+    # Visualize trajectories and conflicts
+    visualize_trajectories(drones, conflicts)
