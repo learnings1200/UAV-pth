@@ -1,0 +1,190 @@
+import math
+import json
+import logging
+import matplotlib.pyplot as plt
+import numpy as np
+import plotly.graph_objects as go
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+class UAVDeconflictionSystem:
+    def __init__(self, buffer_distance=5):
+        self.buffer_distance = buffer_distance
+        logging.info(f"System initialized with buffer distance: {self.buffer_distance}")
+
+    ###############################
+    # 1. HELPER FUNCTION
+    ###############################
+
+    @staticmethod
+    def euclidean_distance(p1, p2):
+        return math.sqrt((p1[0] - p2[0]) ** 2 +
+                         (p1[1] - p2[1]) ** 2 +
+                         (p1[2] - p2[2]) ** 2)
+
+    ###############################
+    # 2. CONFLICT CHECK FUNCTIONS
+    ###############################
+
+    def spatial_check(self, primary, simulated):
+        logging.info("Performing spatial check...")
+        for i, (px, py, pz) in enumerate(primary["waypoints"]):
+            for drone in simulated:
+                for (sx, sy, sz, _) in drone["waypoints"]:
+                    if self.euclidean_distance((px, py, pz), (sx, sy, sz)) < self.buffer_distance:
+                        logging.warning(f"Spatial conflict with {drone['id']} at waypoint {i}")
+                        return True, {
+                            "waypoint": (px, py, pz),
+                            "conflict_with": drone["id"],
+                            "index": i
+                        }
+        return False, {}
+
+    def temporal_check(self, primary, simulated):
+        logging.info("Performing temporal check...")
+        t_start, t_end = primary["time_window"]
+        num_wp = len(primary["waypoints"])
+        time_step = (t_end - t_start) / (num_wp - 1)
+        primary_timed_wp = [
+            (primary["waypoints"][i][0],
+             primary["waypoints"][i][1],
+             primary["waypoints"][i][2],
+             t_start + i * time_step)
+            for i in range(num_wp)
+        ]
+
+        for drone in simulated:
+            for (sx, sy, sz, stime) in drone["waypoints"]:
+                for (px, py, pz, ptime) in primary_timed_wp:
+                    time_overlap = abs(ptime - stime) < time_step
+                    spatial_overlap = self.euclidean_distance((px, py, pz), (sx, sy, sz)) < self.buffer_distance
+                    if time_overlap and spatial_overlap:
+                        logging.warning(f"Temporal conflict with {drone['id']} at time {ptime}")
+                        return True, {
+                            "waypoint": (px, py, pz),
+                            "time": ptime,
+                            "conflict_with": drone["id"]
+                        }
+        return False, {}
+
+    ###############################
+    # 3. MAIN INTERFACE
+    ###############################
+
+    def check_conflict(self, primary, simulated):
+        spatial, spatial_info = self.spatial_check(primary, simulated)
+        temporal, temporal_info = self.temporal_check(primary, simulated)
+
+        if spatial or temporal:
+            logging.info("Conflict detected.")
+            return {
+                "status": "conflict detected",
+                "spatial_conflict": spatial_info if spatial else None,
+                "temporal_conflict": temporal_info if temporal else None
+            }
+
+        logging.info("No conflict detected.")
+        return {
+            "status": "clear",
+            "conflict": None
+        }
+
+    ###############################
+    # 4. VISUALIZATION
+    ###############################
+
+    def visualize_2d(self, primary, simulated, result):
+        logging.info("Visualizing in 2D...")
+        fig, ax = plt.subplots()
+
+        pxs, pys, _ = zip(*primary["waypoints"])
+        ax.plot(pxs, pys, 'bo-', label="Primary Drone")
+
+        for drone in simulated:
+            sxs, sys, _, _ = zip(*drone["waypoints"])
+            ax.plot(sxs, sys, '--', label=f"Sim {drone['id']}")
+
+        if result["status"] == "conflict detected":
+            if result["spatial_conflict"]:
+                wx, wy, _ = result["spatial_conflict"]["waypoint"]
+                ax.plot(wx, wy, 'rx', markersize=12, label="Spatial Conflict")
+            if result["temporal_conflict"]:
+                wx, wy, _ = result["temporal_conflict"]["waypoint"]
+                ax.plot(wx, wy, 'yx', markersize=12, label="Temporal Conflict")
+
+        ax.set_title("Drone Trajectory Conflict Visualization (2D)")
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.legend()
+        plt.grid(True)
+        plt.show()
+
+    def visualize_3d(self, primary, simulated):
+        logging.info("Visualizing in 3D...")
+        fig = go.Figure()
+
+        px, py, pz = zip(*primary["waypoints"])
+        fig.add_trace(go.Scatter3d(x=px, y=py, z=pz, mode='lines+markers', name='Primary'))
+
+        for drone in simulated:
+            sx, sy, sz, _ = zip(*drone["waypoints"])
+            fig.add_trace(go.Scatter3d(x=sx, y=sy, z=sz, mode='lines+markers', name=f"Sim {drone['id']}"))
+
+        fig.update_layout(
+            title="3D Drone Trajectories (X, Y, Z)",
+            scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
+            legend=dict(x=0, y=1)
+        )
+        fig.show()
+
+###############################
+# 5. MAIN EXECUTION + TESTS
+###############################
+
+if __name__ == "__main__":
+    system = UAVDeconflictionSystem(buffer_distance=2)
+
+    primary = {
+        "waypoints": [(0, 0, 0), (5, 5, 5), (10, 10, 10)],
+        "time_window": (0, 10)
+    }
+
+    simulated = [
+        {"id": "DroneA", "waypoints": [(6, 6, 6, 5), (10, 10, 10, 10)]},
+        {"id": "DroneB", "waypoints": [(2, 2, 2, 2), (5, 5, 5, 5)]}
+    ]
+
+    result = system.check_conflict(primary, simulated)
+    print(json.dumps(result, indent=2))
+
+    system.visualize_2d(primary, simulated, result)
+    system.visualize_3d(primary, simulated)
+
+    # Unit Tests
+    def test_clear_conflict():
+        primary = {"waypoints": [(0, 0, 0), (10, 0, 0)], "time_window": (0, 10)}
+        simulated = [{"id": "X", "waypoints": [(0, 10, 10, 1), (10, 10, 10, 9)]}]
+        assert system.check_conflict(primary, simulated)["status"] == "clear"
+        logging.info("test_clear_conflict passed.")
+
+    def test_spatial_conflict():
+        primary = {"waypoints": [(0, 0, 0), (5, 0, 0)], "time_window": (0, 10)}
+        simulated = [{"id": "Y", "waypoints": [(5, 0, 0, 8)]}]
+        assert system.check_conflict(primary, simulated)["spatial_conflict"] is not None
+        logging.info("test_spatial_conflict passed.")
+
+    def test_temporal_conflict():
+        primary = {"waypoints": [(0, 0, 0), (10, 0, 0)], "time_window": (0, 10)}
+        simulated = [{"id": "Z", "waypoints": [(5, 0, 0, 5)]}]
+        assert system.check_conflict(primary, simulated)["temporal_conflict"] is not None
+        logging.info("test_temporal_conflict passed.")
+
+    test_clear_conflict()
+    test_spatial_conflict()
+    test_temporal_conflict()
+    logging.info("All unit tests passed.")
